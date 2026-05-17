@@ -472,6 +472,19 @@ class JsonStore {
   async listLogs() {
     return (await this.read()).logs.slice(0, 80);
   }
+
+  async deleteLogs(logIds = []) {
+    const ids = new Set(logIds.map((item) => String(item)));
+    const state = await this.read();
+    state.logs = state.logs.filter((log) => !ids.has(String(log.id)));
+    await this.write(state);
+  }
+
+  async clearLogs() {
+    const state = await this.read();
+    state.logs = [];
+    await this.write(state);
+  }
 }
 
 class PgStore {
@@ -752,6 +765,16 @@ class PgStore {
        limit 80`
     );
     return rows.map((row) => ({ ...row, createdAt: toIso(row.createdAt) }));
+  }
+
+  async deleteLogs(logIds = []) {
+    const ids = logIds.map((item) => String(item || "").trim()).filter(Boolean);
+    if (!ids.length) return;
+    await this.pool.query(`delete from access_logs where id = any($1::text[])`, [ids]);
+  }
+
+  async clearLogs() {
+    await this.pool.query(`delete from access_logs`);
   }
 }
 
@@ -1061,6 +1084,23 @@ async function main() {
   });
 
   app.get("/api/admin/logs", requireRole("admin"), async (_req, res) => {
+    res.json({ logs: await store.listLogs() });
+  });
+
+  app.delete("/api/admin/logs", requireRole("admin"), async (req, res) => {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    if (req.body.all) {
+      await store.clearLogs();
+    } else {
+      const cleanIds = ids.map((item) => String(item || "").trim()).filter(Boolean);
+      if (!cleanIds.length) return res.status(400).json({ message: "No logs selected" });
+      await store.deleteLogs(cleanIds);
+    }
+    res.json({ logs: await store.listLogs() });
+  });
+
+  app.delete("/api/admin/logs/:logId", requireRole("admin"), async (req, res) => {
+    await store.deleteLogs([req.params.logId]);
     res.json({ logs: await store.listLogs() });
   });
 
