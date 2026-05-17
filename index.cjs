@@ -17,6 +17,8 @@ const TOKEN_SECRET = process.env.TOKEN_SECRET || `${process.env.ADMIN_PASSWORD |
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "ADMIN-2026";
 const DAY_MS = 24 * 60 * 60 * 1000;
+const PROFILE_DESCRIPTION = "Message from Hyperteam install the Hyper regedit access";
+const PROFILE_ORGANIZATION = "Hyperteam";
 
 const defaultOptions = [
   {
@@ -212,6 +214,7 @@ function publicSettings(row = {}) {
   return {
     brandName: row.brand_name || row.brandName || "Hyper Regedit Access",
     appIconUrl: row.app_icon_url || row.appIconUrl || "/icon.png",
+    webClipLabel: row.web_clip_label || row.webClipLabel || "Hyper Access",
     splashImageUrl: row.splash_image_url || row.splashImageUrl || row.app_icon_url || row.appIconUrl || "/icon.png",
     splashText: row.splash_text || row.splashText || "Loading Hyper Regedit Access",
     loginBackgroundUrl: row.login_background_url || row.loginBackgroundUrl || "/assets/hyper-logo.jpeg",
@@ -228,6 +231,131 @@ function publicSettings(row = {}) {
   };
 }
 
+function escapeXml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function cleanProfileLabel(value = "") {
+  return String(value || "Hyper Access").trim().slice(0, 40) || "Hyper Access";
+}
+
+function imageDataUrlBase64(value = "") {
+  const match = String(value).match(/^data:image\/(?:png|jpe?g|webp);base64,([\s\S]+)$/i);
+  return match ? match[1].replace(/\s/g, "") : "";
+}
+
+function assetUrl(value = "") {
+  const source = String(value || "").trim();
+  if (!source || source.startsWith("data:")) return "";
+  if (/^https?:\/\//i.test(source)) return source;
+  if (source.startsWith("/")) {
+    try {
+      return new URL(source, PUBLIC_APP_URL).toString();
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+async function webClipIconBase64(settings = {}) {
+  const embedded = imageDataUrlBase64(settings.appIconUrl);
+  if (embedded) return embedded;
+  const url = assetUrl(settings.appIconUrl);
+  if (!url || typeof fetch !== "function") return "";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3500);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return "";
+    const type = response.headers.get("content-type") || "";
+    if (!type.startsWith("image/")) return "";
+    return Buffer.from(await response.arrayBuffer()).toString("base64");
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function buildMobileConfig(settings = {}) {
+  const label = cleanProfileLabel(settings.webClipLabel || settings.brandName);
+  const appUrl = settings.webClipUrl || PUBLIC_APP_URL;
+  const iconBase64 = await webClipIconBase64(settings);
+  const profileUuid = crypto.randomUUID().toUpperCase();
+  const webClipUuid = crypto.randomUUID().toUpperCase();
+  const iconBlock = iconBase64
+    ? `
+      <key>Icon</key>
+      <data>${iconBase64}</data>`
+    : "";
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>ConsentText</key>
+  <dict>
+    <key>default</key>
+    <string>OWNER : @hyperregedit
+TELEGRAM
+HYPER REGEDIT OFFICIAL
+https://t.me/hyperregedit</string>
+  </dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>FullScreen</key>
+      <true/>${iconBlock}
+      <key>IsRemovable</key>
+      <true/>
+      <key>Label</key>
+      <string>${escapeXml(label)}</string>
+      <key>PayloadDescription</key>
+      <string>Add ${escapeXml(label)} to the iPhone Home Screen.</string>
+      <key>PayloadDisplayName</key>
+      <string>${escapeXml(label)} Web Clip</string>
+      <key>PayloadIdentifier</key>
+      <string>com.hyperregedit.access.webclip</string>
+      <key>PayloadOrganization</key>
+      <string>${PROFILE_ORGANIZATION}</string>
+      <key>PayloadType</key>
+      <string>com.apple.webClip.managed</string>
+      <key>PayloadUUID</key>
+      <string>${webClipUuid}</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>Precomposed</key>
+      <true/>
+      <key>URL</key>
+      <string>${escapeXml(appUrl)}</string>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>${PROFILE_DESCRIPTION}</string>
+  <key>PayloadDisplayName</key>
+  <string>Hyper Regedit Official</string>
+  <key>PayloadIdentifier</key>
+  <string>com.hyperregedit.access.profile</string>
+  <key>PayloadOrganization</key>
+  <string>${PROFILE_ORGANIZATION}</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>${profileUuid}</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>`;
+}
+
 function stateSeed() {
   const adminHash = hashPassword(ADMIN_PASSWORD);
   const userHash = hashPassword("123456");
@@ -236,6 +364,7 @@ function stateSeed() {
     settings: {
       brandName: "Hyper Regedit Access",
       appIconUrl: "/icon.png",
+      webClipLabel: "Hyper Access",
       splashImageUrl: "/icon.png",
       splashText: "Loading Hyper Regedit Access",
       loginBackgroundUrl: "/assets/hyper-logo.jpeg",
@@ -551,16 +680,18 @@ class PgStore {
     const next = { ...current, ...input };
     const { rows } = await this.pool.query(
       `update app_settings
-       set brand_name = $1, app_icon_url = $2, login_background_url = $3, dashboard_logo_url = $4,
-           live_background_url = $5, splash_image_url = $6, splash_text = $7,
-           developer_name = $8, developer_banner_url = $9,
-           telegram_url = $10, maintenance_enabled = $11, maintenance_message = $12, web_clip_url = $13,
+       set brand_name = $1, app_icon_url = $2, web_clip_label = $3,
+           login_background_url = $4, dashboard_logo_url = $5,
+           live_background_url = $6, splash_image_url = $7, splash_text = $8,
+           developer_name = $9, developer_banner_url = $10,
+           telegram_url = $11, maintenance_enabled = $12, maintenance_message = $13, web_clip_url = $14,
            updated_at = now()
        where id = 'main'
        returning *`,
       [
         next.brandName,
         next.appIconUrl,
+        next.webClipLabel,
         next.loginBackgroundUrl,
         next.dashboardLogoUrl,
         next.liveBackgroundUrl,
@@ -1143,10 +1274,21 @@ async function main() {
     res.json({ logs: await store.listLogs() });
   });
 
+  app.get(["/hyper-regedit-access.mobileconfig", "/api/mobileconfig"], async (_req, res) => {
+    const settings = await store.getSettings();
+    const profile = await buildMobileConfig(settings);
+    res.setHeader("Content-Type", "application/x-apple-aspen-config");
+    res.setHeader("Content-Disposition", 'attachment; filename="hyper-regedit-access.mobileconfig"');
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(profile);
+  });
+
   app.get("/", async (_req, res) => {
     res.json({
       ok: true,
       service: "Hyper Regedit Access API",
+      mobileConfig: "/hyper-regedit-access.mobileconfig",
       adminPanel: process.env.PUBLIC_APP_URL ? process.env.PUBLIC_APP_URL.replace(/\/app\/?$/, "/admin") : "/admin"
     });
   });
