@@ -163,6 +163,7 @@ function publicUser(row = {}, optionStates = {}) {
     status: row.status,
     expiresAt,
     deviceId: deviceIds[0] || "",
+    deviceName: row.device_name || row.deviceName || "",
     maxDevices,
     activeDevices: deviceIds.length,
     deviceLockedAt: toIso(row.device_locked_at || row.deviceLockedAt),
@@ -203,6 +204,8 @@ function publicSettings(row = {}) {
     dashboardLogoUrl: row.dashboard_logo_url || row.dashboardLogoUrl || row.app_icon_url || row.appIconUrl || "/icon.png",
     liveBackgroundUrl:
       row.live_background_url || row.liveBackgroundUrl || row.login_background_url || row.loginBackgroundUrl || "/assets/hyper-logo.jpeg",
+    developerName: row.developer_name || row.developerName || "ESE Developer",
+    developerBannerUrl: row.developer_banner_url || row.developerBannerUrl || "",
     telegramUrl: row.telegram_url || row.telegramUrl || "https://t.me/your_support",
     maintenanceEnabled: Boolean(row.maintenance_enabled ?? row.maintenanceEnabled),
     maintenanceMessage:
@@ -222,6 +225,8 @@ function stateSeed() {
       loginBackgroundUrl: "/assets/hyper-logo.jpeg",
       dashboardLogoUrl: "/icon.png",
       liveBackgroundUrl: "/assets/hyper-logo.jpeg",
+      developerName: "ESE Developer",
+      developerBannerUrl: "",
       telegramUrl: "https://t.me/your_support",
       maintenanceEnabled: false,
       maintenanceMessage: "System maintenance is running. Please try again later.",
@@ -241,6 +246,7 @@ function stateSeed() {
         expiresAt: new Date(now.getTime() + 7 * DAY_MS).toISOString(),
         deviceId: "",
         deviceIds: [],
+        deviceName: "",
         maxDevices: 1,
         deviceLockedAt: null,
         lastSeenAt: null,
@@ -286,6 +292,15 @@ class JsonStore {
   async getAdmin(username) {
     const state = await this.read();
     return state.admins.find((admin) => admin.username === username) || null;
+  }
+
+  async updateAdminPassword(username, password) {
+    const state = await this.read();
+    const admin = state.admins.find((item) => item.username === username);
+    if (!admin) throw new Error("Admin not found");
+    admin.passwordHash = hashPassword(password);
+    await this.write(state);
+    return { username: admin.username };
   }
 
   async listPackages() {
@@ -377,6 +392,7 @@ class JsonStore {
       expiresAt,
       deviceId: "",
       deviceIds: [],
+      deviceName: "",
       maxDevices: Math.max(1, Number(input.maxDevices || 1) || 1),
       deviceLockedAt: null,
       lastSeenAt: null,
@@ -403,6 +419,7 @@ class JsonStore {
       expiresAt: input.expiresAt ?? user.expiresAt,
       deviceId: input.resetDevice ? "" : user.deviceId,
       deviceIds: input.resetDevice ? [] : parseDeviceIds(user.deviceIds, user.deviceId),
+      deviceName: input.resetDevice ? "" : user.deviceName,
       maxDevices: Math.max(1, Number(input.maxDevices ?? user.maxDevices ?? 1) || 1),
       deviceLockedAt: input.resetDevice ? null : user.deviceLockedAt
     };
@@ -506,8 +523,9 @@ class PgStore {
     const { rows } = await this.pool.query(
       `update app_settings
        set brand_name = $1, app_icon_url = $2, login_background_url = $3, dashboard_logo_url = $4,
-           live_background_url = $5, telegram_url = $6, maintenance_enabled = $7,
-           maintenance_message = $8, web_clip_url = $9, updated_at = now()
+           live_background_url = $5, developer_name = $6, developer_banner_url = $7,
+           telegram_url = $8, maintenance_enabled = $9, maintenance_message = $10, web_clip_url = $11,
+           updated_at = now()
        where id = 'main'
        returning *`,
       [
@@ -516,6 +534,8 @@ class PgStore {
         next.loginBackgroundUrl,
         next.dashboardLogoUrl,
         next.liveBackgroundUrl,
+        next.developerName,
+        next.developerBannerUrl,
         next.telegramUrl,
         next.maintenanceEnabled,
         next.maintenanceMessage,
@@ -528,6 +548,15 @@ class PgStore {
   async getAdmin(username) {
     const { rows } = await this.pool.query(`select * from admins where username = $1`, [username]);
     return rows[0] ? { username: rows[0].username, passwordHash: rows[0].password_hash } : null;
+  }
+
+  async updateAdminPassword(username, password) {
+    const { rows } = await this.pool.query(
+      `update admins set password_hash = $1, updated_at = now() where username = $2 returning username`,
+      [hashPassword(password), username]
+    );
+    if (!rows[0]) throw new Error("Admin not found");
+    return { username: rows[0].username };
   }
 
   async listPackages() {
@@ -611,8 +640,8 @@ class PgStore {
     const expiresAt =
       input.expiresAt || new Date(Date.now() + Number(pkg?.durationDays || input.durationDays || 7) * DAY_MS).toISOString();
     const { rows } = await this.pool.query(
-      `insert into app_users (id, username, password_hash, package_id, package_name, status, expires_at, max_devices, device_ids)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb)
+      `insert into app_users (id, username, password_hash, package_id, package_name, status, expires_at, max_devices, device_ids, device_name)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb, '')
        returning *`,
       [
         id("user"),
@@ -637,8 +666,9 @@ class PgStore {
     const { rows } = await this.pool.query(
       `update app_users
        set username = $1, password_hash = $2, package_id = $3, package_name = $4, status = $5,
-           expires_at = $6, device_id = $7, device_ids = $8::jsonb, max_devices = $9, device_locked_at = $10, updated_at = now()
-       where id = $11
+           expires_at = $6, device_id = $7, device_ids = $8::jsonb, max_devices = $9,
+           device_name = $10, device_locked_at = $11, updated_at = now()
+       where id = $12
        returning *`,
       [
         input.username ?? current.username,
@@ -650,6 +680,7 @@ class PgStore {
         input.resetDevice ? null : current.device_id,
         input.resetDevice ? JSON.stringify([]) : JSON.stringify(parseDeviceIds(current.device_ids, current.device_id)),
         Math.max(1, Number(input.maxDevices ?? current.max_devices ?? 1) || 1),
+        input.resetDevice ? "" : current.device_name,
         input.resetDevice ? null : current.device_locked_at,
         userId
       ]
@@ -683,6 +714,7 @@ class PgStore {
     const map = {
       deviceId: "device_id",
       deviceIds: "device_ids",
+      deviceName: "device_name",
       maxDevices: "max_devices",
       deviceLockedAt: "device_locked_at",
       lastSeenAt: "last_seen_at",
@@ -826,6 +858,7 @@ async function main() {
     const username = String(req.body.username || "").trim();
     const password = String(req.body.password || "");
     const deviceId = String(req.body.deviceId || "").trim();
+    const deviceName = String(req.body.deviceName || "").trim();
     const user = await store.getUserByUsername(username);
 
     if (!user || !verifyPassword(password, user.passwordHash || user.password_hash)) {
@@ -873,6 +906,7 @@ async function main() {
     const updatedUser = await store.setUserLoginState(user.id, {
       deviceId: nextDeviceIds[0] || deviceId,
       deviceIds: nextDeviceIds,
+      deviceName: deviceName || user.device_name || user.deviceName || "",
       deviceLockedAt: knownDeviceIds.length ? user.device_locked_at || user.deviceLockedAt : now.toISOString(),
       lastSeenAt: now.toISOString(),
       onlineUntil
@@ -951,6 +985,16 @@ async function main() {
 
   app.get("/api/admin/users", requireRole("admin"), async (_req, res) => {
     res.json({ users: await store.listUsers() });
+  });
+
+  app.patch("/api/admin/password", requireRole("admin"), async (req, res) => {
+    const newPassword = String(req.body.newPassword || "");
+    if (newPassword.length < 6) return res.status(400).json({ message: "New password must be at least 6 characters" });
+    const admin = await store.getAdmin(req.auth.username);
+    if (req.body.currentPassword && !verifyPassword(req.body.currentPassword, admin?.passwordHash || admin?.password_hash)) {
+      return res.status(403).json({ message: "Current admin password is wrong" });
+    }
+    res.json({ admin: await store.updateAdminPassword(req.auth.username, newPassword) });
   });
 
   app.post("/api/admin/users", requireRole("admin"), async (req, res) => {

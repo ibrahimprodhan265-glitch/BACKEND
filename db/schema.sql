@@ -13,6 +13,8 @@ create table if not exists app_settings (
   login_background_url text not null default '/assets/hyper-logo.jpeg',
   dashboard_logo_url text not null default '/icon.png',
   live_background_url text not null default '/assets/hyper-logo.jpeg',
+  developer_name text not null default 'ESE Developer',
+  developer_banner_url text not null default '',
   telegram_url text not null default 'https://t.me/your_support',
   maintenance_enabled boolean not null default false,
   maintenance_message text not null default 'System maintenance is running. Please try again later.',
@@ -40,6 +42,7 @@ create table if not exists app_users (
   expires_at timestamptz,
   device_id text,
   device_ids jsonb not null default '[]'::jsonb,
+  device_name text not null default '',
   max_devices integer not null default 1,
   device_locked_at timestamptz,
   last_seen_at timestamptz,
@@ -93,8 +96,17 @@ alter table if exists app_settings
 alter table if exists app_settings
   add column if not exists live_background_url text not null default '/assets/hyper-logo.jpeg';
 
+alter table if exists app_settings
+  add column if not exists developer_name text not null default 'ESE Developer';
+
+alter table if exists app_settings
+  add column if not exists developer_banner_url text not null default '';
+
 alter table if exists app_users
   add column if not exists device_ids jsonb not null default '[]'::jsonb;
+
+alter table if exists app_users
+  add column if not exists device_name text not null default '';
 
 alter table if exists app_users
   add column if not exists max_devices integer not null default 1;
