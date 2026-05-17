@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: hyper-regedit-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: TOKEN_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        value: ADMIN-2026
+      - key: PUBLIC_APP_URL
+        sync: false

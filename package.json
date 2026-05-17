@@ -1,0 +1,20 @@
+{
+  "name": "hyper-regedit-backend-render",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Render Web Service backend API for Hyper Regedit Access.",
+  "main": "index.cjs",
+  "scripts": {
+    "start": "node index.cjs",
+    "dev": "node index.cjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
