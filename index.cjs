@@ -150,6 +150,18 @@ function parseDeviceIds(value, fallback = "") {
   return [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))];
 }
 
+function isGenericDeviceName(value = "") {
+  return ["iPhone", "iPad", "Android Device", "Unknown Device"].includes(String(value || "").trim());
+}
+
+function nextDeviceName(incoming = "", current = "") {
+  const next = String(incoming || "").trim().slice(0, 80);
+  const existing = String(current || "").trim();
+  if (!next) return existing;
+  if (existing && isGenericDeviceName(next) && !isGenericDeviceName(existing)) return existing;
+  return next;
+}
+
 function publicUser(row = {}, optionStates = {}) {
   const expiresAt = toIso(row.expires_at || row.expiresAt);
   const onlineUntil = row.online_until || row.onlineUntil;
@@ -200,6 +212,8 @@ function publicSettings(row = {}) {
   return {
     brandName: row.brand_name || row.brandName || "Hyper Regedit Access",
     appIconUrl: row.app_icon_url || row.appIconUrl || "/icon.png",
+    splashImageUrl: row.splash_image_url || row.splashImageUrl || row.app_icon_url || row.appIconUrl || "/icon.png",
+    splashText: row.splash_text || row.splashText || "Loading Hyper Regedit Access",
     loginBackgroundUrl: row.login_background_url || row.loginBackgroundUrl || "/assets/hyper-logo.jpeg",
     dashboardLogoUrl: row.dashboard_logo_url || row.dashboardLogoUrl || row.app_icon_url || row.appIconUrl || "/icon.png",
     liveBackgroundUrl:
@@ -222,6 +236,8 @@ function stateSeed() {
     settings: {
       brandName: "Hyper Regedit Access",
       appIconUrl: "/icon.png",
+      splashImageUrl: "/icon.png",
+      splashText: "Loading Hyper Regedit Access",
       loginBackgroundUrl: "/assets/hyper-logo.jpeg",
       dashboardLogoUrl: "/icon.png",
       liveBackgroundUrl: "/assets/hyper-logo.jpeg",
@@ -419,7 +435,7 @@ class JsonStore {
       expiresAt: input.expiresAt ?? user.expiresAt,
       deviceId: input.resetDevice ? "" : user.deviceId,
       deviceIds: input.resetDevice ? [] : parseDeviceIds(user.deviceIds, user.deviceId),
-      deviceName: input.resetDevice ? "" : user.deviceName,
+      deviceName: input.resetDevice ? "" : input.deviceName ?? user.deviceName,
       maxDevices: Math.max(1, Number(input.maxDevices ?? user.maxDevices ?? 1) || 1),
       deviceLockedAt: input.resetDevice ? null : user.deviceLockedAt
     };
@@ -536,8 +552,9 @@ class PgStore {
     const { rows } = await this.pool.query(
       `update app_settings
        set brand_name = $1, app_icon_url = $2, login_background_url = $3, dashboard_logo_url = $4,
-           live_background_url = $5, developer_name = $6, developer_banner_url = $7,
-           telegram_url = $8, maintenance_enabled = $9, maintenance_message = $10, web_clip_url = $11,
+           live_background_url = $5, splash_image_url = $6, splash_text = $7,
+           developer_name = $8, developer_banner_url = $9,
+           telegram_url = $10, maintenance_enabled = $11, maintenance_message = $12, web_clip_url = $13,
            updated_at = now()
        where id = 'main'
        returning *`,
@@ -547,6 +564,8 @@ class PgStore {
         next.loginBackgroundUrl,
         next.dashboardLogoUrl,
         next.liveBackgroundUrl,
+        next.splashImageUrl,
+        next.splashText,
         next.developerName,
         next.developerBannerUrl,
         next.telegramUrl,
@@ -693,7 +712,7 @@ class PgStore {
         input.resetDevice ? null : current.device_id,
         input.resetDevice ? JSON.stringify([]) : JSON.stringify(parseDeviceIds(current.device_ids, current.device_id)),
         Math.max(1, Number(input.maxDevices ?? current.max_devices ?? 1) || 1),
-        input.resetDevice ? "" : current.device_name,
+        input.resetDevice ? "" : input.deviceName ?? current.device_name,
         input.resetDevice ? null : current.device_locked_at,
         userId
       ]
@@ -929,7 +948,7 @@ async function main() {
     const updatedUser = await store.setUserLoginState(user.id, {
       deviceId: nextDeviceIds[0] || deviceId,
       deviceIds: nextDeviceIds,
-      deviceName: deviceName || user.device_name || user.deviceName || "",
+      deviceName: nextDeviceName(deviceName, user.device_name || user.deviceName || ""),
       deviceLockedAt: knownDeviceIds.length ? user.device_locked_at || user.deviceLockedAt : now.toISOString(),
       lastSeenAt: now.toISOString(),
       onlineUntil
@@ -978,6 +997,26 @@ async function main() {
     res.json(
       packageUserResponse(freshUser, await store.listOptions(), settings, await store.getUserOptionStates(user.id))
     );
+  });
+
+  app.patch("/api/me/device-name", requireRole("user"), async (req, res) => {
+    const user = await store.getUserById(req.auth.sub);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const deviceName = String(req.body.deviceName || "").trim().slice(0, 80);
+    if (!deviceName) return res.status(400).json({ message: "Device name required" });
+    const updatedUser = await store.setUserLoginState(user.id, {
+      deviceName,
+      lastSeenAt: new Date().toISOString(),
+      onlineUntil: new Date(Date.now() + 2 * 60 * 1000).toISOString()
+    });
+    await store.addLog({
+      userId: user.id,
+      username: user.username,
+      action: "device_name_saved",
+      ipAddress: clientIp(req),
+      userAgent: req.headers["user-agent"] || ""
+    });
+    res.json({ user: publicUser(updatedUser, await store.getUserOptionStates(user.id)) });
   });
 
   app.patch("/api/me/options/:optionId", requireRole("user"), async (req, res) => {

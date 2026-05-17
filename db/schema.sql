@@ -10,6 +10,8 @@ create table if not exists app_settings (
   id text primary key default 'main',
   brand_name text not null default 'Hyper Regedit Access',
   app_icon_url text not null default '/icon.png',
+  splash_image_url text not null default '/icon.png',
+  splash_text text not null default 'Loading Hyper Regedit Access',
   login_background_url text not null default '/assets/hyper-logo.jpeg',
   dashboard_logo_url text not null default '/icon.png',
   live_background_url text not null default '/assets/hyper-logo.jpeg',
@@ -89,6 +91,12 @@ create index if not exists access_logs_created_at_idx on access_logs(created_at 
 
 alter table if exists app_settings
   add column if not exists login_background_url text not null default '/assets/hyper-logo.jpeg';
+
+alter table if exists app_settings
+  add column if not exists splash_image_url text not null default '/icon.png';
+
+alter table if exists app_settings
+  add column if not exists splash_text text not null default 'Loading Hyper Regedit Access';
 
 alter table if exists app_settings
   add column if not exists dashboard_logo_url text not null default '/icon.png';
