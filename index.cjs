@@ -134,9 +134,27 @@ function toIso(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function parseDeviceIds(value, fallback = "") {
+  let list = [];
+  if (Array.isArray(value)) {
+    list = value;
+  } else if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      list = Array.isArray(parsed) ? parsed : [value];
+    } catch {
+      list = [value];
+    }
+  }
+  if (fallback) list.push(fallback);
+  return [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
 function publicUser(row = {}, optionStates = {}) {
   const expiresAt = toIso(row.expires_at || row.expiresAt);
   const onlineUntil = row.online_until || row.onlineUntil;
+  const deviceIds = parseDeviceIds(row.device_ids || row.deviceIds, row.device_id || row.deviceId || "");
+  const maxDevices = Math.max(1, Number(row.max_devices ?? row.maxDevices ?? 1) || 1);
   return {
     id: row.id,
     username: row.username,
@@ -144,7 +162,9 @@ function publicUser(row = {}, optionStates = {}) {
     packageName: row.package_name || row.packageName || "Custom Access",
     status: row.status,
     expiresAt,
-    deviceId: row.device_id || row.deviceId || "",
+    deviceId: deviceIds[0] || "",
+    maxDevices,
+    activeDevices: deviceIds.length,
     deviceLockedAt: toIso(row.device_locked_at || row.deviceLockedAt),
     lastSeenAt: toIso(row.last_seen_at || row.lastSeenAt),
     online: onlineUntil ? new Date(onlineUntil).getTime() > Date.now() : false,
@@ -180,6 +200,9 @@ function publicSettings(row = {}) {
     brandName: row.brand_name || row.brandName || "Hyper Regedit Access",
     appIconUrl: row.app_icon_url || row.appIconUrl || "/icon.png",
     loginBackgroundUrl: row.login_background_url || row.loginBackgroundUrl || "/assets/hyper-logo.jpeg",
+    dashboardLogoUrl: row.dashboard_logo_url || row.dashboardLogoUrl || row.app_icon_url || row.appIconUrl || "/icon.png",
+    liveBackgroundUrl:
+      row.live_background_url || row.liveBackgroundUrl || row.login_background_url || row.loginBackgroundUrl || "/assets/hyper-logo.jpeg",
     telegramUrl: row.telegram_url || row.telegramUrl || "https://t.me/your_support",
     maintenanceEnabled: Boolean(row.maintenance_enabled ?? row.maintenanceEnabled),
     maintenanceMessage:
@@ -197,6 +220,8 @@ function stateSeed() {
       brandName: "Hyper Regedit Access",
       appIconUrl: "/icon.png",
       loginBackgroundUrl: "/assets/hyper-logo.jpeg",
+      dashboardLogoUrl: "/icon.png",
+      liveBackgroundUrl: "/assets/hyper-logo.jpeg",
       telegramUrl: "https://t.me/your_support",
       maintenanceEnabled: false,
       maintenanceMessage: "System maintenance is running. Please try again later.",
@@ -215,6 +240,8 @@ function stateSeed() {
         status: "Active",
         expiresAt: new Date(now.getTime() + 7 * DAY_MS).toISOString(),
         deviceId: "",
+        deviceIds: [],
+        maxDevices: 1,
         deviceLockedAt: null,
         lastSeenAt: null,
         onlineUntil: null
@@ -344,11 +371,13 @@ class JsonStore {
       id: id("user"),
       username: String(input.username || "").trim(),
       passwordHash: hashPassword(input.password || "123456"),
-      packageId: input.packageId || pkg?.id || "",
+      packageId: input.packageId || "",
       packageName: input.packageName || pkg?.name || "Custom Access",
       status: input.status || "Active",
       expiresAt,
       deviceId: "",
+      deviceIds: [],
+      maxDevices: Math.max(1, Number(input.maxDevices || 1) || 1),
       deviceLockedAt: null,
       lastSeenAt: null,
       onlineUntil: null
@@ -373,6 +402,8 @@ class JsonStore {
       status: input.status ?? user.status,
       expiresAt: input.expiresAt ?? user.expiresAt,
       deviceId: input.resetDevice ? "" : user.deviceId,
+      deviceIds: input.resetDevice ? [] : parseDeviceIds(user.deviceIds, user.deviceId),
+      maxDevices: Math.max(1, Number(input.maxDevices ?? user.maxDevices ?? 1) || 1),
       deviceLockedAt: input.resetDevice ? null : user.deviceLockedAt
     };
     await this.write(state);
@@ -461,6 +492,7 @@ class PgStore {
        on conflict (username) do nothing`,
       ["user_demo", "user001", hashPassword("123456"), "pkg_7", "7 Days", "Active"]
     );
+    await this.pool.query(`update app_users set device_ids = coalesce(device_ids, '[]'::jsonb), max_devices = coalesce(max_devices, 1)`);
   }
 
   async getSettings() {
@@ -473,14 +505,17 @@ class PgStore {
     const next = { ...current, ...input };
     const { rows } = await this.pool.query(
       `update app_settings
-       set brand_name = $1, app_icon_url = $2, login_background_url = $3, telegram_url = $4, maintenance_enabled = $5,
-           maintenance_message = $6, web_clip_url = $7, updated_at = now()
+       set brand_name = $1, app_icon_url = $2, login_background_url = $3, dashboard_logo_url = $4,
+           live_background_url = $5, telegram_url = $6, maintenance_enabled = $7,
+           maintenance_message = $8, web_clip_url = $9, updated_at = now()
        where id = 'main'
        returning *`,
       [
         next.brandName,
         next.appIconUrl,
         next.loginBackgroundUrl,
+        next.dashboardLogoUrl,
+        next.liveBackgroundUrl,
         next.telegramUrl,
         next.maintenanceEnabled,
         next.maintenanceMessage,
@@ -576,17 +611,18 @@ class PgStore {
     const expiresAt =
       input.expiresAt || new Date(Date.now() + Number(pkg?.durationDays || input.durationDays || 7) * DAY_MS).toISOString();
     const { rows } = await this.pool.query(
-      `insert into app_users (id, username, password_hash, package_id, package_name, status, expires_at)
-       values ($1, $2, $3, $4, $5, $6, $7)
+      `insert into app_users (id, username, password_hash, package_id, package_name, status, expires_at, max_devices, device_ids)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb)
        returning *`,
       [
         id("user"),
         String(input.username || "").trim(),
         hashPassword(input.password || "123456"),
-        input.packageId || pkg?.id || null,
+        input.packageId || null,
         input.packageName || pkg?.name || "Custom Access",
         input.status || "Active",
-        expiresAt
+        expiresAt,
+        Math.max(1, Number(input.maxDevices || 1) || 1)
       ]
     );
     return publicUser(rows[0], {});
@@ -601,8 +637,8 @@ class PgStore {
     const { rows } = await this.pool.query(
       `update app_users
        set username = $1, password_hash = $2, package_id = $3, package_name = $4, status = $5,
-           expires_at = $6, device_id = $7, device_locked_at = $8, updated_at = now()
-       where id = $9
+           expires_at = $6, device_id = $7, device_ids = $8::jsonb, max_devices = $9, device_locked_at = $10, updated_at = now()
+       where id = $11
        returning *`,
       [
         input.username ?? current.username,
@@ -612,6 +648,8 @@ class PgStore {
         input.status ?? current.status,
         input.expiresAt ?? current.expires_at,
         input.resetDevice ? null : current.device_id,
+        input.resetDevice ? JSON.stringify([]) : JSON.stringify(parseDeviceIds(current.device_ids, current.device_id)),
+        Math.max(1, Number(input.maxDevices ?? current.max_devices ?? 1) || 1),
         input.resetDevice ? null : current.device_locked_at,
         userId
       ]
@@ -644,14 +682,16 @@ class PgStore {
     const values = [];
     const map = {
       deviceId: "device_id",
+      deviceIds: "device_ids",
+      maxDevices: "max_devices",
       deviceLockedAt: "device_locked_at",
       lastSeenAt: "last_seen_at",
       onlineUntil: "online_until"
     };
     for (const [key, column] of Object.entries(map)) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) {
-        values.push(patch[key]);
-        columns.push(`${column} = $${values.length}`);
+        values.push(key === "deviceIds" ? JSON.stringify(patch[key] || []) : patch[key]);
+        columns.push(`${column} = $${values.length}${key === "deviceIds" ? "::jsonb" : ""}`);
       }
     }
     if (!columns.length) return this.getUserById(userId);
@@ -809,8 +849,14 @@ async function main() {
       return res.status(403).json({ message: "Package inactive or expired" });
     }
 
-    const storedDeviceId = user.device_id || user.deviceId || "";
-    if (storedDeviceId && storedDeviceId !== deviceId) {
+    if (!deviceId) {
+      return res.status(400).json({ message: "Device ID missing" });
+    }
+
+    const maxDevices = Math.max(1, Number(user.max_devices ?? user.maxDevices ?? 1) || 1);
+    const knownDeviceIds = parseDeviceIds(user.device_ids || user.deviceIds, user.device_id || user.deviceId || "");
+    const deviceAllowed = knownDeviceIds.includes(deviceId);
+    if (!deviceAllowed && knownDeviceIds.length >= maxDevices) {
       await store.addLog({
         userId: user.id,
         username: user.username,
@@ -818,14 +864,16 @@ async function main() {
         ipAddress: clientIp(req),
         userAgent: req.headers["user-agent"] || ""
       });
-      return res.status(403).json({ message: "This user is locked to another device" });
+      return res.status(403).json({ message: "Device limit reached. Ask admin to reset or increase limit." });
     }
 
     const now = new Date();
+    const nextDeviceIds = deviceAllowed ? knownDeviceIds : [...knownDeviceIds, deviceId];
     const onlineUntil = new Date(now.getTime() + 2 * 60 * 1000).toISOString();
     const updatedUser = await store.setUserLoginState(user.id, {
-      deviceId: storedDeviceId || deviceId,
-      deviceLockedAt: storedDeviceId ? user.device_locked_at || user.deviceLockedAt : now.toISOString(),
+      deviceId: nextDeviceIds[0] || deviceId,
+      deviceIds: nextDeviceIds,
+      deviceLockedAt: knownDeviceIds.length ? user.device_locked_at || user.deviceLockedAt : now.toISOString(),
       lastSeenAt: now.toISOString(),
       onlineUntil
     });
