@@ -11,6 +11,8 @@ create table if not exists app_settings (
   brand_name text not null default 'Hyper Regedit Access',
   app_icon_url text not null default '/icon.png',
   login_background_url text not null default '/assets/hyper-logo.jpeg',
+  dashboard_logo_url text not null default '/icon.png',
+  live_background_url text not null default '/assets/hyper-logo.jpeg',
   telegram_url text not null default 'https://t.me/your_support',
   maintenance_enabled boolean not null default false,
   maintenance_message text not null default 'System maintenance is running. Please try again later.',
@@ -37,6 +39,8 @@ create table if not exists app_users (
   status text not null default 'Active',
   expires_at timestamptz,
   device_id text,
+  device_ids jsonb not null default '[]'::jsonb,
+  max_devices integer not null default 1,
   device_locked_at timestamptz,
   last_seen_at timestamptz,
   online_until timestamptz,
@@ -82,3 +86,20 @@ create index if not exists access_logs_created_at_idx on access_logs(created_at 
 
 alter table if exists app_settings
   add column if not exists login_background_url text not null default '/assets/hyper-logo.jpeg';
+
+alter table if exists app_settings
+  add column if not exists dashboard_logo_url text not null default '/icon.png';
+
+alter table if exists app_settings
+  add column if not exists live_background_url text not null default '/assets/hyper-logo.jpeg';
+
+alter table if exists app_users
+  add column if not exists device_ids jsonb not null default '[]'::jsonb;
+
+alter table if exists app_users
+  add column if not exists max_devices integer not null default 1;
+
+update app_users
+set device_ids = jsonb_build_array(device_id)
+where coalesce(device_id, '') <> ''
+  and jsonb_array_length(coalesce(device_ids, '[]'::jsonb)) = 0;
