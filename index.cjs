@@ -868,7 +868,7 @@ async function main() {
       credentials: true
     })
   );
-  app.use(express.json({ limit: "8mb" }));
+  app.use(express.json({ limit: "25mb" }));
 
   app.get("/api/health", async (_req, res) => {
     res.json({ ok: true, storage: DATABASE_URL ? "neon" : "local-json" });
