@@ -189,6 +189,13 @@ function publicUser(row = {}, optionStates = {}) {
   };
 }
 
+function adminUser(row = {}, optionStates = {}) {
+  return {
+    ...publicUser(row, optionStates),
+    accessKey: row.access_key || row.accessKey || ""
+  };
+}
+
 function publicOption(row = {}) {
   return {
     id: row.id,
@@ -386,6 +393,7 @@ function stateSeed() {
       {
         id: "user_demo",
         username: "user001",
+        accessKey: "123456",
         passwordHash: userHash,
         packageId: "pkg_7",
         packageName: "7 Days",
@@ -515,7 +523,7 @@ class JsonStore {
 
   async listUsers() {
     const state = await this.read();
-    return state.users.map((user) => publicUser(user, this.userStatesFromState(state, user.id)));
+    return state.users.map((user) => adminUser(user, this.userStatesFromState(state, user.id)));
   }
 
   userStatesFromState(state, userId) {
@@ -544,6 +552,7 @@ class JsonStore {
     const user = {
       id: userId,
       username,
+      accessKey,
       passwordHash: hashPassword(accessKey),
       packageId: input.packageId || "",
       packageName: input.packageName || pkg?.name || "Custom Access",
@@ -559,7 +568,7 @@ class JsonStore {
     };
     state.users.push(user);
     await this.write(state);
-    return publicUser(user, {});
+    return adminUser(user, {});
   }
 
   async updateUser(userId, input) {
@@ -575,6 +584,7 @@ class JsonStore {
     state.users[index] = {
       ...user,
       username: input.username ?? user.username,
+      accessKey: nextAccessKey || user.accessKey || "",
       passwordHash: nextAccessKey ? hashPassword(nextAccessKey) : user.passwordHash,
       packageId: input.packageId ?? user.packageId,
       packageName: input.packageName || pkg?.name || user.packageName,
@@ -587,7 +597,7 @@ class JsonStore {
       deviceLockedAt: input.resetDevice ? null : user.deviceLockedAt
     };
     await this.write(state);
-    return publicUser(state.users[index], this.userStatesFromState(state, userId));
+    return adminUser(state.users[index], this.userStatesFromState(state, userId));
   }
 
   async deleteUser(userId) {
@@ -680,11 +690,12 @@ class PgStore {
       );
     }
     await this.pool.query(
-      `insert into app_users (id, username, password_hash, package_id, package_name, status, expires_at)
-       values ($1, $2, $3, $4, $5, $6, now() + interval '7 days')
+      `insert into app_users (id, username, password_hash, access_key, package_id, package_name, status, expires_at)
+       values ($1, $2, $3, $4, $5, $6, $7, now() + interval '7 days')
        on conflict (username) do nothing`,
-      ["user_demo", "user001", hashPassword("123456"), "pkg_7", "7 Days", "Active"]
+      ["user_demo", "user001", hashPassword("123456"), "123456", "pkg_7", "7 Days", "Active"]
     );
+    await this.pool.query(`update app_users set access_key = '123456' where username = 'user001' and coalesce(access_key, '') = ''`);
     await this.pool.query(`update app_users set device_ids = coalesce(device_ids, '[]'::jsonb), max_devices = coalesce(max_devices, 1)`);
   }
 
@@ -815,7 +826,7 @@ class PgStore {
     const { rows } = await this.pool.query(`select * from app_users order by created_at desc`);
     const users = [];
     for (const row of rows) {
-      users.push(publicUser(row, await this.getUserOptionStates(row.id)));
+      users.push(adminUser(row, await this.getUserOptionStates(row.id)));
     }
     return users;
   }
@@ -831,13 +842,14 @@ class PgStore {
     const userId = id("user");
     const username = String(input.username || userId).trim() || userId;
     const { rows } = await this.pool.query(
-      `insert into app_users (id, username, password_hash, package_id, package_name, status, expires_at, max_devices, device_ids, device_name)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb, '')
+      `insert into app_users (id, username, password_hash, access_key, package_id, package_name, status, expires_at, max_devices, device_ids, device_name)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, '[]'::jsonb, '')
        returning *`,
       [
         userId,
         username,
         hashPassword(accessKey),
+        accessKey,
         input.packageId || null,
         input.packageName || pkg?.name || "Custom Access",
         input.status || "Active",
@@ -845,7 +857,7 @@ class PgStore {
         Math.max(1, Number(input.maxDevices || 1) || 1)
       ]
     );
-    return publicUser(rows[0], {});
+    return adminUser(rows[0], {});
   }
 
   async updateUser(userId, input) {
@@ -861,14 +873,15 @@ class PgStore {
     const nextHash = nextAccessKey ? hashPassword(nextAccessKey) : current.password_hash;
     const { rows } = await this.pool.query(
       `update app_users
-       set username = $1, password_hash = $2, package_id = $3, package_name = $4, status = $5,
-           expires_at = $6, device_id = $7, device_ids = $8::jsonb, max_devices = $9,
-           device_name = $10, device_locked_at = $11, updated_at = now()
-       where id = $12
+       set username = $1, password_hash = $2, access_key = $3, package_id = $4, package_name = $5, status = $6,
+           expires_at = $7, device_id = $8, device_ids = $9::jsonb, max_devices = $10,
+           device_name = $11, device_locked_at = $12, updated_at = now()
+       where id = $13
        returning *`,
       [
         input.username ?? current.username,
         nextHash,
+        nextAccessKey || current.access_key || "",
         input.packageId ?? current.package_id,
         input.packageName || pkg?.name || current.package_name,
         input.status ?? current.status,
@@ -881,7 +894,7 @@ class PgStore {
         userId
       ]
     );
-    return publicUser(rows[0], await this.getUserOptionStates(userId));
+    return adminUser(rows[0], await this.getUserOptionStates(userId));
   }
 
   async deleteUser(userId) {
