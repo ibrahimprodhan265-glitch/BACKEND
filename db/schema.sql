@@ -79,6 +79,7 @@ create table if not exists access_logs (
   id text primary key,
   user_id text references app_users(id) on delete set null,
   username text not null default '',
+  device_id text not null default '',
   action text not null,
   ip_address text not null default '',
   user_agent text not null default '',
@@ -122,6 +123,9 @@ alter table if exists app_users
 
 alter table if exists app_users
   add column if not exists max_devices integer not null default 1;
+
+alter table if exists access_logs
+  add column if not exists device_id text not null default '';
 
 update app_users
 set device_ids = jsonb_build_array(device_id)

@@ -171,12 +171,14 @@ function publicUser(row = {}, optionStates = {}) {
   const maxDevices = Math.max(1, Number(row.max_devices ?? row.maxDevices ?? 1) || 1);
   return {
     id: row.id,
+    userId: row.id,
     username: row.username,
     packageId: row.package_id || row.packageId || "",
     packageName: row.package_name || row.packageName || "Custom Access",
     status: row.status,
     expiresAt,
     deviceId: deviceIds[0] || "",
+    deviceIds,
     deviceName: row.device_name || row.deviceName || "",
     maxDevices,
     activeDevices: deviceIds.length,
@@ -501,6 +503,11 @@ class JsonStore {
     return user ? { ...user, passwordHash: user.passwordHash } : null;
   }
 
+  async getUserByPassword(password) {
+    const state = await this.read();
+    return state.users.find((item) => verifyPassword(password, item.passwordHash)) || null;
+  }
+
   async getUserById(userId) {
     const state = await this.read();
     return state.users.find((item) => item.id === userId) || null;
@@ -521,16 +528,23 @@ class JsonStore {
 
   async createUser(input) {
     const state = await this.read();
-    if (state.users.some((user) => user.username.toLowerCase() === input.username.toLowerCase())) {
+    const accessKey = String(input.password || "").trim();
+    if (!accessKey) throw new Error("Access key is required");
+    if (state.users.some((user) => verifyPassword(accessKey, user.passwordHash))) {
+      throw new Error("Access key already exists");
+    }
+    const userId = id("user");
+    const username = String(input.username || userId).trim() || userId;
+    if (state.users.some((user) => user.username.toLowerCase() === username.toLowerCase())) {
       throw new Error("Username already exists");
     }
     const pkg = state.packages.find((item) => item.id === input.packageId) || state.packages[0];
     const expiresAt =
       input.expiresAt || new Date(Date.now() + Number(pkg?.durationDays || input.durationDays || 7) * DAY_MS).toISOString();
     const user = {
-      id: id("user"),
-      username: String(input.username || "").trim(),
-      passwordHash: hashPassword(input.password || "123456"),
+      id: userId,
+      username,
+      passwordHash: hashPassword(accessKey),
       packageId: input.packageId || "",
       packageName: input.packageName || pkg?.name || "Custom Access",
       status: input.status || "Active",
@@ -553,11 +567,15 @@ class JsonStore {
     const index = state.users.findIndex((item) => item.id === userId);
     if (index < 0) throw new Error("User not found");
     const user = state.users[index];
+    const nextAccessKey = String(input.password || "").trim();
+    if (nextAccessKey && state.users.some((item) => item.id !== userId && verifyPassword(nextAccessKey, item.passwordHash))) {
+      throw new Error("Access key already exists");
+    }
     const pkg = state.packages.find((item) => item.id === input.packageId);
     state.users[index] = {
       ...user,
       username: input.username ?? user.username,
-      passwordHash: input.password ? hashPassword(input.password) : user.passwordHash,
+      passwordHash: nextAccessKey ? hashPassword(nextAccessKey) : user.passwordHash,
       packageId: input.packageId ?? user.packageId,
       packageName: input.packageName || pkg?.name || user.packageName,
       status: input.status ?? user.status,
@@ -783,6 +801,11 @@ class PgStore {
     return rows[0] || null;
   }
 
+  async getUserByPassword(password) {
+    const { rows } = await this.pool.query(`select * from app_users order by created_at desc`);
+    return rows.find((row) => verifyPassword(password, row.password_hash)) || null;
+  }
+
   async getUserById(userId) {
     const { rows } = await this.pool.query(`select * from app_users where id = $1`, [userId]);
     return rows[0] || null;
@@ -798,18 +821,23 @@ class PgStore {
   }
 
   async createUser(input) {
+    const accessKey = String(input.password || "").trim();
+    if (!accessKey) throw new Error("Access key is required");
+    if (await this.getUserByPassword(accessKey)) throw new Error("Access key already exists");
     const packages = await this.listPackages();
     const pkg = packages.find((item) => item.id === input.packageId) || packages[0];
     const expiresAt =
       input.expiresAt || new Date(Date.now() + Number(pkg?.durationDays || input.durationDays || 7) * DAY_MS).toISOString();
+    const userId = id("user");
+    const username = String(input.username || userId).trim() || userId;
     const { rows } = await this.pool.query(
       `insert into app_users (id, username, password_hash, package_id, package_name, status, expires_at, max_devices, device_ids, device_name)
        values ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb, '')
        returning *`,
       [
-        id("user"),
-        String(input.username || "").trim(),
-        hashPassword(input.password || "123456"),
+        userId,
+        username,
+        hashPassword(accessKey),
         input.packageId || null,
         input.packageName || pkg?.name || "Custom Access",
         input.status || "Active",
@@ -823,9 +851,14 @@ class PgStore {
   async updateUser(userId, input) {
     const current = await this.getUserById(userId);
     if (!current) throw new Error("User not found");
+    const nextAccessKey = String(input.password || "").trim();
+    if (nextAccessKey) {
+      const duplicate = await this.getUserByPassword(nextAccessKey);
+      if (duplicate && duplicate.id !== userId) throw new Error("Access key already exists");
+    }
     const packages = await this.listPackages();
     const pkg = packages.find((item) => item.id === input.packageId);
-    const nextHash = input.password ? hashPassword(input.password) : current.password_hash;
+    const nextHash = nextAccessKey ? hashPassword(nextAccessKey) : current.password_hash;
     const { rows } = await this.pool.query(
       `update app_users
        set username = $1, password_hash = $2, package_id = $3, package_name = $4, status = $5,
@@ -900,15 +933,23 @@ class PgStore {
 
   async addLog(input) {
     await this.pool.query(
-      `insert into access_logs (id, user_id, username, action, ip_address, user_agent)
-       values ($1, $2, $3, $4, $5, $6)`,
-      [id("log"), input.userId || null, input.username || "", input.action, input.ipAddress || "", input.userAgent || ""]
+      `insert into access_logs (id, user_id, username, device_id, action, ip_address, user_agent)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        id("log"),
+        input.userId || null,
+        input.username || "",
+        input.deviceId || "",
+        input.action,
+        input.ipAddress || "",
+        input.userAgent || ""
+      ]
     );
   }
 
   async listLogs() {
     const { rows } = await this.pool.query(
-      `select id, user_id as "userId", username, action, ip_address as "ipAddress",
+      `select id, user_id as "userId", username, device_id as "deviceId", action, ip_address as "ipAddress",
               user_agent as "userAgent", created_at as "createdAt"
        from access_logs
        order by created_at desc
@@ -1029,25 +1070,37 @@ async function main() {
     }
 
     const username = String(req.body.username || "").trim();
-    const password = String(req.body.password || "");
+    const password = String(req.body.password || "").trim();
     const deviceId = String(req.body.deviceId || "").trim();
     const deviceName = String(req.body.deviceName || "").trim();
-    const user = await store.getUserByUsername(username);
-
-    if (!user || !verifyPassword(password, user.passwordHash || user.password_hash)) {
+    if (!password) {
       await store.addLog({
         username,
+        deviceId,
         action: "failed_login",
         ipAddress: clientIp(req),
         userAgent: req.headers["user-agent"] || ""
       });
-      return res.status(401).json({ message: "Username or password is not active" });
+      return res.status(401).json({ message: "Access key is required" });
+    }
+    const user = username ? await store.getUserByUsername(username) : await store.getUserByPassword(password);
+
+    if (!user || (username && !verifyPassword(password, user.passwordHash || user.password_hash))) {
+      await store.addLog({
+        username,
+        deviceId,
+        action: "failed_login",
+        ipAddress: clientIp(req),
+        userAgent: req.headers["user-agent"] || ""
+      });
+      return res.status(401).json({ message: "Access key is not active" });
     }
 
     if (String(user.status || "").toLowerCase() !== "active" || isExpired(user)) {
       await store.addLog({
         userId: user.id,
         username: user.username,
+        deviceId,
         action: "blocked_login",
         ipAddress: clientIp(req),
         userAgent: req.headers["user-agent"] || ""
@@ -1066,6 +1119,7 @@ async function main() {
       await store.addLog({
         userId: user.id,
         username: user.username,
+        deviceId,
         action: "device_blocked",
         ipAddress: clientIp(req),
         userAgent: req.headers["user-agent"] || ""
@@ -1087,12 +1141,16 @@ async function main() {
     await store.addLog({
       userId: user.id,
       username: user.username,
+      deviceId,
       action: "login",
       ipAddress: clientIp(req),
       userAgent: req.headers["user-agent"] || ""
     });
 
-    const token = signToken({ role: "user", sub: user.id, username: user.username }, req.body.remember ? 30 * DAY_MS : DAY_MS);
+    const token = signToken(
+      { role: "user", sub: user.id, username: user.username, deviceId },
+      req.body.remember ? 30 * DAY_MS : DAY_MS
+    );
     const optionStates = await store.getUserOptionStates(user.id);
     res.json({
       token,
@@ -1107,6 +1165,7 @@ async function main() {
       await store.addLog({
         userId: user.id,
         username: user.username,
+        deviceId: req.auth.deviceId || "",
         action: "logout",
         ipAddress: clientIp(req),
         userAgent: req.headers["user-agent"] || ""
@@ -1143,6 +1202,7 @@ async function main() {
     await store.addLog({
       userId: user.id,
       username: user.username,
+      deviceId: req.auth.deviceId || "",
       action: "device_name_saved",
       ipAddress: clientIp(req),
       userAgent: req.headers["user-agent"] || ""
@@ -1157,6 +1217,7 @@ async function main() {
     await store.addLog({
       userId: user.id,
       username: user.username,
+      deviceId: req.auth.deviceId || "",
       action: `option_${req.body.enabled ? "on" : "off"}`,
       ipAddress: clientIp(req),
       userAgent: req.headers["user-agent"] || ""
