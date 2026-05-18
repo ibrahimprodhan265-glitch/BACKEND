@@ -667,6 +667,8 @@ class PgStore {
 
   async init() {
     await this.pool.query(await fs.readFile(SCHEMA_FILE, "utf8"));
+    await this.pool.query(`alter table if exists app_users add column if not exists access_key text not null default ''`);
+    await this.pool.query(`alter table if exists access_logs add column if not exists device_id text not null default ''`);
     await this.pool.query(
       `insert into app_settings (id, web_clip_url) values ('main', $1) on conflict (id) do nothing`,
       [PUBLIC_APP_URL]
